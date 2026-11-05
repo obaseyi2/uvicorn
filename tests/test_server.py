@@ -122,6 +122,39 @@ async def test_shutdown_on_early_exit_during_startup(unused_tcp_port: int):
     assert shutdown_complete, "lifespan.shutdown was not called despite startup completing"
 
 
+async def test_main_loop_wakes_on_exit_request(monkeypatch: pytest.MonkeyPatch):
+    server = Server(Config(app=app, lifespan="off"))
+    original_sleep = asyncio.sleep
+
+    async def stalled_poll(delay: float):
+        if delay == 0.1:
+            await asyncio.Event().wait()
+        else:
+            await original_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", stalled_poll)
+    task = asyncio.create_task(server.main_loop())
+    await original_sleep(0)
+    assert not task.done()
+
+    server.should_exit = True
+    await asyncio.wait_for(task, timeout=0.5)
+
+
+async def test_idle_shutdown_skips_drain_delay(monkeypatch: pytest.MonkeyPatch):
+    config = Config(app=app, lifespan="off")
+    config.load()
+    server = Server(config)
+    server.servers = []
+    server.lifespan = config.lifespan_class(config)
+
+    async def unexpected_sleep(delay: float):
+        raise AssertionError(f"idle shutdown slept for {delay} seconds")
+
+    monkeypatch.setattr(asyncio, "sleep", unexpected_sleep)
+    await server.shutdown()
+
+
 def test_run_exits_with_startup_failure_on_unloadable_app() -> None:
     """A server exits with the dedicated startup-failure code when the app can't load.
 
